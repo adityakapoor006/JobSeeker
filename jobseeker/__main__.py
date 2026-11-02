@@ -2,7 +2,7 @@
 import argparse
 import json
 
-from . import db, liveness, pipeline
+from . import db, inbox, liveness, pipeline
 from .config import load_settings, save_settings
 from .resume import load_resume
 
@@ -12,7 +12,15 @@ def main() -> None:
     parser.add_argument("--tailor", metavar="JOB_ID", help="tailor one role, e.g. a Stretch role")
     parser.add_argument("--setup", action="store_true", help="choose job locations")
     parser.add_argument("--check", action="store_true", help="check every stored role is still open")
+    parser.add_argument("--email", action="store_true", help="check your inbox for application updates")
     args = parser.parse_args()
+    if args.email:
+        try:
+            with db.connect() as conn:
+                print(json.dumps(inbox.scan(conn, load_settings()["companies"])))
+        except inbox.NotConfigured as exc:
+            raise SystemExit(str(exc)) from None
+        return
     if args.check:
         with db.connect() as conn:
             print(json.dumps(liveness.verify_jobs(conn)))

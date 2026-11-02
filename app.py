@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from jobseeker import db, liveness, pipeline, schedule
+from jobseeker import db, inbox, liveness, pipeline, schedule
 from jobseeker.config import FEEDS, RESUME_DIR, SETTINGS_PATH, env, load_settings, save_settings
 from jobseeker.resume import latest_resume, load_resume
 
@@ -105,7 +105,8 @@ if top[1].button("Check roles are open"):
         result = liveness.verify_jobs(conn)
     st.success(f"{result['active']} open, {result['closed']} closed and removed, {result['unverified']} unconfirmed")
 
-tabs = st.tabs(["Open positions", "High (80-100)", "Medium (60-79)", "Stretch (40-59)", "Resume analysis", "Settings"])
+tabs = st.tabs(["Open positions", "High (80-100)", "Medium (60-79)", "Stretch (40-59)", "Email updates",
+                "Resume analysis", "Settings"])
 for tab, bucket in zip(tabs[1:], ("High", "Medium", "Stretch")):
     with tab:
         role_table(bucket)
@@ -134,6 +135,30 @@ with tabs[0]:
         st.write("No open roles matching your cities and experience.")
 
 with tabs[4]:
+    if not inbox.configured():
+        st.info("Add EMAIL_ADDRESS and EMAIL_APP_PASSWORD to .env to find application updates in your inbox. "
+                "For Gmail, use an app password. The inbox is only read: nothing is marked read, moved or deleted.")
+    elif st.button("Check email now"):
+        with st.spinner("Reading new job emails"), db.connect() as conn:
+            result = inbox.scan(conn, settings["companies"])
+        st.success(f"{result['emails']} new job emails, {result['updated_roles']} roles updated")
+        if result["llm_failed"]:
+            st.caption("OpenAI was unavailable, so emails were sorted by keyword rules only.")
+    show_all = st.checkbox("Include job alerts and recruiter outreach", False)
+    with db.connect() as conn:
+        mails = [dict(r) for r in conn.execute("SELECT * FROM emails ORDER BY received_at DESC")]
+    if not show_all:
+        mails = [m for m in mails if m["category"] not in ("Job alert", "Recruiter outreach")]
+    if mails:
+        st.dataframe(pd.DataFrame([{
+            "Received": m["received_at"][:16].replace("T", " "), "Update": m["category"],
+            "Company": m["company"], "Role": m["role"], "Next step": m["next_step"],
+            "Deadline": m["deadline"], "Summary": m["summary"], "Subject": m["subject"], "From": m["sender"],
+        } for m in mails]), hide_index=True, width="stretch")
+    else:
+        st.write("No job emails found yet.")
+
+with tabs[5]:
     st.caption(f"Resume in use: {latest_resume().name}")
     upload = st.file_uploader("Replace resume (analysis reruns on the next run)", ["docx", "pdf", "txt", "md"])
     if upload and st.button("Use this resume"):
@@ -148,7 +173,7 @@ with tabs[4]:
         st.subheader("Gaps")
         st.table(pd.DataFrame(data.get("gaps", [])))
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Locations")
     save_location_form("settings")
     st.subheader("Experience")

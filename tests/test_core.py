@@ -273,3 +273,53 @@ def test_company_openings_match_board_names_and_include_unscored():
     assert [r["id"] for r in found["Walmart"]] == ["a", "b"]
     assert [r["id"] for r in found["ANZ Bank"]] == ["e"]
     assert found["Juspay"] == []
+
+
+def _email(sender, subject, body, html_body=False, date="Mon, 02 Nov 2026 10:00:00 +0530"):
+    from email.message import EmailMessage
+    message = EmailMessage()
+    message["From"], message["Subject"], message["Date"] = sender, subject, date
+    message["Message-ID"] = f"<{abs(hash(subject + date))}@test>"
+    message.set_content(body, subtype="html" if html_body else "plain")
+    return message
+
+
+def test_email_classification_rules():
+    from jobseeker.inbox import classify
+    assert classify("Your application to HSBC", "Unfortunately we will not be progressing your application") == "Rejection"
+    assert classify("Interview invitation: Data Engineer", "") == "Interview"
+    assert classify("Thank you for applying", "If shortlisted we will contact you for an interview") == \
+        "Application received"
+    assert classify("Complete your HackerRank test", "") == "Assessment"
+    assert classify("Lunch on Friday?", "See you there") is None
+
+
+def test_email_filter_ignores_shopping_offers():
+    from jobseeker.inbox import looks_job_related
+    assert looks_job_related("Workday <noreply@hsbc.myworkday.com>", "Hello")
+    assert looks_job_related("Priya <priya@acme.com>", "Senior Data Engineer opportunity")
+    assert not looks_job_related("Shop <deals@store.com>", "50% off offer ends tonight")
+
+
+def test_email_updates_matched_role():
+    from jobseeker.inbox import record
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    conn.execute("INSERT INTO jobs (id, company, title, url, source, first_seen, last_seen) VALUES "
+                 "('j1', 'Goldman Sachs', 'Data Engineer', 'u', 'careers', 'x', 'x')")
+    messages = [
+        _email("Goldman Sachs Careers <careers@gs.com>", "Thank you for your application",
+               "<p>We received your application for <b>Data Engineer</b>.</p>", html_body=True),
+        _email("Goldman Sachs Careers <careers@gs.com>", "Interview invitation",
+               "We would like to invite you to an interview for the Data Engineer role.",
+               date="Tue, 03 Nov 2026 10:00:00 +0530"),
+        _email("Friend <a@b.com>", "Weekend plans", "Unfortunately I can't come."),
+    ]
+    stats = record(conn, messages, ["Goldman Sachs"], use_llm=False)
+    assert stats["emails"] == 2 and stats["updated_roles"] == 2
+    rows = [dict(r) for r in conn.execute("SELECT category, company, job_id FROM emails ORDER BY received_at")]
+    assert [r["category"] for r in rows] == ["Application received", "Interview"]
+    assert all(r["company"] == "Goldman Sachs" and r["job_id"] == "j1" for r in rows)
+    assert conn.execute("SELECT status FROM jobs").fetchone()["status"] == "interviewing"
+    assert record(conn, messages, ["Goldman Sachs"], use_llm=False)["emails"] == 0

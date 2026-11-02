@@ -8,7 +8,7 @@ from datetime import datetime
 
 import httpx
 
-from . import db, liveness, llm
+from . import db, inbox, liveness, llm
 from .render import markdown_to_docx
 from .config import DATA_DIR, FEEDS, OUTPUT_DIR, env, load_settings, location_terms
 from .resume import load_resume
@@ -386,9 +386,15 @@ def _run() -> dict:
         tailored, failed = tailor_pending(conn, resume, settings["max_tailored_per_run"])
         if failed:
             errors.append(f"{failed} tailored resumes failed and will retry next run")
+        emails = 0
+        if inbox.configured():
+            try:
+                emails = inbox.scan(conn, settings["companies"])["emails"]
+            except Exception as exc:
+                errors.append(f"Email check failed: {describe_error(exc)}")
         report = write_report(conn, analysis, settings, counts, errors, new_ids, checked)
         summary = {"found": len(found), "kept": len(kept), "new": len(new_ids), "closed": checked["closed"],
-                   "scored": scored, "tailored": tailored, "errors": errors}
+                   "scored": scored, "tailored": tailored, "emails": emails, "errors": errors}
         conn.execute("UPDATE runs SET finished_at = ?, summary_json = ?, report_path = ? WHERE id = ?",
                      (db.now(), json.dumps(summary), report, run_id))
     return {**summary, "report": report}

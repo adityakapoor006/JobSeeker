@@ -41,6 +41,24 @@ CREATE TABLE IF NOT EXISTS analysis (
     created_at TEXT NOT NULL,
     analysis_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS emails (
+    message_id TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    category TEXT NOT NULL,
+    company TEXT,
+    role TEXT,
+    job_id TEXT,
+    summary TEXT,
+    next_step TEXT,
+    deadline TEXT,
+    found_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inbox_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_scan TEXT NOT NULL
+);
 """
 
 

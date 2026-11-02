@@ -15,6 +15,7 @@ It runs on your own machine. Your resume, API keys, job database and reports sta
 | Fit score | 0-100, computed from evidence in your resume, not a number the model picks |
 | Buckets | High 80-100, Medium 60-79, Stretch 40-59, below 40 counted only |
 | Tailoring | High and Medium roles get a tailored `.docx` resume. Stretch roles are tailored on request |
+| Email updates | Optional. Reads your inbox for application replies, interview invites, assessments, offers and rejections, and updates the matching role's status |
 | Report | A Markdown report per run, plus a Streamlit dashboard |
 
 ## Architecture
@@ -36,6 +37,7 @@ flowchart LR
     SC --> T[Tailoring<br/>pipeline.tailor]
     T --> O[Report and .docx<br/>output/]
     S --> UI[Dashboard<br/>app.py]
+    M[Inbox over IMAP<br/>inbox.py] --> S
 ```
 
 A run (`pipeline.run`) goes through these steps in order. A source that fails is reported in the run summary, with its HTTP status where there is one, and never stops the run. Only one run happens at a time: a second run started from the dashboard, the command line or the schedule is refused while one is in progress, because overlapping runs exceed Apify's limit of 5 concurrent jobs on the free plan.
@@ -51,6 +53,7 @@ A run (`pipeline.run`) goes through these steps in order. A source that fails is
 | `jobseeker/sources/direct.py` | One fetcher per career-site platform |
 | `jobseeker/sources/apify.py` | LinkedIn, Naukri, Indeed and Foundit searches through Apify actors |
 | `jobseeker/liveness.py` | Checks whether each stored role is still open |
+| `jobseeker/inbox.py` | Reads job emails from your inbox, read-only, and links them to stored roles |
 | `jobseeker/llm.py` | OpenAI prompts for resume analysis, fit scoring and tailoring, with strict truth rules |
 | `jobseeker/resume.py` | Reads the newest resume (`.docx`, `.pdf`, `.txt` or `.md`) and hashes it |
 | `jobseeker/render.py` | Turns a tailored Markdown resume into a `.docx` file |
@@ -95,6 +98,18 @@ A role listed by its source during the current run is open. Any other stored rol
 
 A check that fails or is ambiguous never closes a role; it stays "unconfirmed".
 
+### Email updates
+
+When `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` are set, each run also checks your inbox over IMAP. You can also check it with **Check email now** in the dashboard.
+
+- **Read-only:** the folder is opened read-only and messages are fetched with `BODY.PEEK`, so nothing is marked read, moved or deleted.
+- **What it reads:** the first scan covers the last 30 days; later scans start from the previous scan. Only emails from hiring platforms and job boards, or with a job-related subject, are opened.
+- **Sorting:** each email becomes Offer, Rejection, Interview, Assessment, Application received, Job alert or Recruiter outreach. Keyword rules always run. With OpenAI credit, the model also reads the email and adds the company, role, a summary, the next step and any deadline; up to 40 emails per scan.
+- **Linking:** an email that names a stored role's company and title moves that role to `applied`, `assessment`, `interviewing`, `offer` or `rejected`.
+- **Privacy:** job emails are stored only in your local database. With OpenAI enabled, the text of those emails is sent to OpenAI to be summarised.
+
+For Gmail, turn on 2-Step Verification, create an app password at myaccount.google.com/apppasswords, and put it in `.env`. Your normal Google password won't work. Other providers work too: set `EMAIL_IMAP_HOST`, and `EMAIL_FOLDER` if the folder isn't `INBOX`.
+
 ### Truthful tailoring
 
 The tailoring prompt may only rephrase and reorder facts already in your resume. After generation, JobSeeker also flags:
@@ -123,6 +138,7 @@ Then fill in `.env`:
 | `OPENAI_API_KEY` | Resume analysis, fit scoring and tailoring |
 | `OPENAI_MODEL` | Model name, default `gpt-4o` |
 | `APIFY_TOKEN` | LinkedIn, Naukri, Indeed and Foundit. Optional: without it, only career sites are searched |
+| `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD` | Optional inbox updates. `EMAIL_IMAP_HOST` defaults to `imap.gmail.com` |
 
 Put your resume in `data/resume/`. The newest file there is used, and changing it triggers a new resume analysis.
 
@@ -145,6 +161,12 @@ This runs one full search now.
 ```
 
 This rechecks that every stored role is still open.
+
+```bash
+.venv/bin/python -m jobseeker --email
+```
+
+This checks your inbox for application updates now.
 
 ```bash
 .venv/bin/python -m jobseeker --tailor JOB_ID
@@ -170,6 +192,7 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 |---|---|
 | Open positions | Open roles per target company, scored or not, with links to each job posting. Filter to career sites only or pick one company |
 | High, Medium, Stretch | Scored roles with fit score, matched and missing requirements, and the tailored resume to download. Mark roles applied or dismiss them |
+| Email updates | Application updates from your inbox with next steps and deadlines. Job alerts and recruiter outreach are hidden unless you include them |
 | Resume analysis | Target roles, strengths and gaps. Upload a new resume here |
 | Settings | Cities, remote roles, years of experience, and the target company list |
 
@@ -204,4 +227,4 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 .venv/bin/python -m pytest
 ```
 
-The tests cover the filters, fit scoring, fabrication checks, feed parsers and open-role checks. They don't call the network.
+The tests cover the filters, fit scoring, fabrication checks, feed parsers, open-role checks and email sorting. They don't call the network.
