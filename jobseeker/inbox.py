@@ -19,7 +19,8 @@ FIRST_SCAN_DAYS = 30
 MAX_HEADERS = 2000
 FETCH_BATCH = 200
 BODY_LIMIT = 4000
-MAX_LLM_EMAILS = 40
+# The newest emails go to OpenAI first; older ones fall back to the keyword rules.
+MAX_LLM_EMAILS = 100
 
 # Hiring platforms and job boards; mail from these is always looked at.
 JOB_SENDERS = (
@@ -33,18 +34,23 @@ JOB_SENDERS = (
 JOB_SUBJECT = re.compile(r"applica|applied|applying|interview|assessment|candida|recruit|hiring|position|"
                          r"\brole\b|opening|opportunit|career|\bjobs?\b|job offer|offer letter", re.I)
 
+# Automated alert and newsletter senders: always "Job alert", never sent to OpenAI.
+ALERT_SENDER = re.compile(r"alert|digest|newsletter|\.news$|marketing|promo", re.I)
+
 # Checked against the subject first, then the body; the first match wins.
 CATEGORIES = [
-    ("Offer", r"offer letter|pleased to offer|job offer|offer of employment|extend (?:you )?an offer"),
+    ("Offer", r"offer letter|pleased to offer you|offer of employment|extend (?:you )?an offer"),
     ("Rejection", r"not (?:be )?(?:moving|proceeding|progressing) (?:forward|further)|"
                   r"(?:move|proceed|go) (?:forward )?with other candidates|not been (?:selected|shortlisted)|"
                   r"regret to inform|will not be progressing|no longer (?:under consideration|being considered)|"
-                  r"position has been filled|unable to (?:offer you|move forward)|unfortunately"),
+                  r"position has been filled|unable to (?:offer you|move forward)|"
+                  r"unfortunately,? (?:we|after|your application|at this time)"),
     ("Interview", r"invit\w* (?:you )?(?:to|for) (?:an? |the )?(?:interview|call|conversation|discussion)|"
                   r"interview (?:invitation|invite|schedul|confirm|slot|details)|schedule (?:an? |your )?interview|"
                   r"next round|interview on\b"),
-    ("Assessment", r"\bassessment\b|coding (?:test|challenge|exercise)|hackerrank|codility|hackerearth|"
-                   r"online test|take[- ]home"),
+    ("Assessment", r"online assessment|(?:complete|take) (?:the |your |an? )?(?:online |coding )?(?:assessment|test)|"
+                   r"assessment (?:link|invitation|invite)|coding (?:test|challenge|exercise)|take[- ]home|"
+                   r"hackerrank|codility|hackerearth"),
     ("Application received", r"application (?:has been |was )?(?:received|submitted)|"
                              r"thanks? (?:you )?for (?:your )?(?:applying|application|interest)|"
                              r"(?:we(?:'ve| have)|we) received your application|successfully applied|application sent"),
@@ -62,7 +68,9 @@ JOB_STATUS = {"Application received": "applied", "Assessment": "assessment", "In
 EMAIL_PROMPT = """You read one email from a job seeker's inbox. Use only what the email says.
 Return JSON: {{"category": one of {categories}, "company": str, "role": str,
 "summary": str, "next_step": str, "deadline": str}}
-"category" is "Other" when the email is not about a job application, interview or opening.
+"category" is "Other" when the email is not about the candidate's own application, an interview or an
+opening offered to them. Newsletters, promotions, career advice, webinars, contests, courses, bank or
+card mail and warnings about job fraud are "Other". An automated list of openings is "Job alert".
 "company" is the hiring company, not the job board or hiring platform; "" if not stated.
 "summary" is one sentence. "next_step" is what the candidate must do, "" if nothing.
 "deadline" is a date or time the email gives for that step, "" if none.
@@ -137,19 +145,21 @@ def received_at(message: EmailMessage) -> str:
 def record(conn, messages: list[EmailMessage], companies: list[str], use_llm: bool) -> dict:
     """Stores the job-related messages and moves matched roles to their new status."""
     stats = {"emails": 0, "updated_roles": 0, "llm_failed": False}
-    llm_calls = 0
+    candidates = []
     for message in sorted(messages, key=received_at):
         sender, subject = str(message["From"] or ""), str(message["Subject"] or "")
         message_id = str(message["Message-ID"] or f"{sender}|{subject}|{message['Date']}")
         if conn.execute("SELECT 1 FROM emails WHERE message_id = ?", (message_id,)).fetchone():
             continue
-        if not looks_job_related(sender, subject):
-            continue
+        if looks_job_related(sender, subject):
+            candidates.append((message, message_id, sender, subject, bool(ALERT_SENDER.search(parseaddr(sender)[1]))))
+    personal = [c[1] for c in candidates if not c[4]]
+    llm_ids = set(personal[-MAX_LLM_EMAILS:]) if use_llm else set()
+    for message, message_id, sender, subject, alert in candidates:
         body = body_text(message)
-        category = classify(subject, body)
+        category = "Job alert" if alert else classify(subject, body)
         details = {"company": "", "role": "", "summary": "", "next_step": "", "deadline": ""}
-        if use_llm and not stats["llm_failed"] and llm_calls < MAX_LLM_EMAILS:
-            llm_calls += 1
+        if message_id in llm_ids and not stats["llm_failed"]:
             try:
                 answer = llm.complete_json(EMAIL_PROMPT.format(
                     categories=LLM_CATEGORIES, sender=sender, subject=subject, body=body))
@@ -181,7 +191,8 @@ def fetch_messages(since: datetime) -> list[EmailMessage]:
     if not configured():
         raise NotConfigured("Add EMAIL_ADDRESS and EMAIL_APP_PASSWORD to .env to check email.")
     with imaplib.IMAP4_SSL(env("EMAIL_IMAP_HOST") or "imap.gmail.com") as imap:
-        imap.login(env("EMAIL_ADDRESS"), env("EMAIL_APP_PASSWORD"))
+        # Google shows app passwords in groups of four; the spaces are not part of it.
+        imap.login(env("EMAIL_ADDRESS"), env("EMAIL_APP_PASSWORD").replace(" ", ""))
         imap.select(env("EMAIL_FOLDER") or "INBOX", readonly=True)
         _, data = imap.uid("SEARCH", None, "SINCE", since.strftime("%d-%b-%Y"))
         uids = data[0].split()[-MAX_HEADERS:]

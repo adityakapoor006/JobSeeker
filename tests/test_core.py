@@ -323,3 +323,15 @@ def test_email_updates_matched_role():
     assert all(r["company"] == "Goldman Sachs" and r["job_id"] == "j1" for r in rows)
     assert conn.execute("SELECT status FROM jobs").fetchone()["status"] == "interviewing"
     assert record(conn, messages, ["Goldman Sachs"], use_llm=False)["emails"] == 0
+
+
+def test_email_rules_skip_newsletters_and_alerts():
+    from jobseeker.inbox import ALERT_SENDER, classify
+    assert classify("Caution: Beware of fake and lucrative job offers!", "") is None
+    assert classify("IndusInd Platinum Card assessment complete", "") is None
+    assert classify("6 things to know on World Polio Day", "Unfortunately polio still exists") is None
+    assert classify("Your application", "Unfortunately, we have decided to move forward with other candidates") \
+        == "Rejection"
+    assert classify("Next steps", "Please complete the online assessment by Friday") == "Assessment"
+    assert ALERT_SENDER.search("jobalerts-noreply@linkedin.com") and ALERT_SENDER.search("noreply@unstop.news")
+    assert not ALERT_SENDER.search("careers@stripe.com")

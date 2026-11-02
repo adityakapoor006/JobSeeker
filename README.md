@@ -104,7 +104,7 @@ When `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` are set, each run also checks your
 
 - **Read-only:** the folder is opened read-only and messages are fetched with `BODY.PEEK`, so nothing is marked read, moved or deleted.
 - **What it reads:** the first scan covers the last 30 days; later scans start from the previous scan. Only emails from hiring platforms and job boards, or with a job-related subject, are opened.
-- **Sorting:** each email becomes Offer, Rejection, Interview, Assessment, Application received, Job alert or Recruiter outreach. Keyword rules always run. With OpenAI credit, the model also reads the email and adds the company, role, a summary, the next step and any deadline; up to 40 emails per scan.
+- **Sorting:** each email becomes Offer, Rejection, Interview, Assessment, Application received, Job alert or Recruiter outreach. Keyword rules always run. With OpenAI credit, the model also reads the email and adds the company, role, a summary, the next step and any deadline, newest first, up to 100 emails per scan. Job-board alerts and newsletters are recognised by sender and never sent to OpenAI.
 - **Linking:** an email that names a stored role's company and title moves that role to `applied`, `assessment`, `interviewing`, `offer` or `rejected`.
 - **Privacy:** job emails are stored only in your local database. With OpenAI enabled, the text of those emails is sent to OpenAI to be summarised.
 
