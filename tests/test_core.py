@@ -7,7 +7,8 @@ from jobseeker.db import SCHEMA
 from jobseeker.liveness import check_deloitte, check_hsbc, check_job, check_sitemap
 from jobseeker.pipeline import (bucket_for, company_openings, compute_fit, evidence_in_resume, filter_jobs,
                                 leaked_jd_terms, unsupported_numbers)
-from jobseeker.sources.apify import linkedin_item_to_job, naukri_item_to_job
+from jobseeker import pipeline
+from jobseeker.sources.apify import foundit_item_to_job, indeed_item_to_job, linkedin_item_to_job, naukri_item_to_job
 from jobseeker.sources.base import Job, experience_range, fits_experience, in_locations, relevant_title
 from jobseeker.sources.direct import (goldman_roles, juspay_openings, parse_job_page, sitemap_job_urls, usi_cards,
                                       usi_locations)
@@ -68,6 +69,35 @@ def test_apify_mappings_use_real_field_shapes():
                               "description": {"full": "<p>Java</p>"}, "skills": {"other": ["Kafka"]}})
     assert (job.exp_min, job.exp_max) == (5, 8) and "Kafka" in job.description
     assert naukri_item_to_job({"title": "Senior Engineer", "url": "u", "consultant": True}) is None
+
+
+def test_indeed_and_foundit_mappings_use_real_field_shapes():
+    item = {"url": "https://in.indeed.com/viewjob?jk=3a57", "title": "Full Stack Senior Software Engineer",
+            "expired": False, "datePublished": "2026-10-27T05:00:00.000Z", "employer": {"name": "Beckman Coulter"},
+            "location": {"countryName": "India", "admin3Code": "BLR", "city": ""}, "description": {"text": "Java"}}
+    job = indeed_item_to_job(item, "Bengaluru")
+    assert (job.location, job.posted_at, job.description) == ("Bengaluru, India", "2026-10-27", "Java")
+    assert indeed_item_to_job({**item, "expired": True}, "Bengaluru") is None
+    item = {"job_id": "69678857", "title": "Senior Software Engineer, PDX", "company": "Intuit",
+            "location": "Bengaluru, India", "experience_min_years": 7, "experience_max_years": 9,
+            "skills": ["Java", "React"], "functions": ["Software Engineering"], "posted_days_ago": 1,
+            "apply_url": "https://www.foundit.in/job/x-69678857", "scraped_at": "2026-11-02T15:41:30.986Z"}
+    job = foundit_item_to_job(item)
+    assert (job.exp_min, job.exp_max, job.posted_at) == (7, 9, "2026-11-01") and "Java, React" in job.description
+    assert foundit_item_to_job({"_type": "summary", "jobs_scraped": 3}) is None
+
+
+def test_second_run_is_refused_while_one_is_in_progress(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "LOCK_PATH", tmp_path / "run.lock")
+    monkeypatch.setattr(pipeline, "DATA_DIR", tmp_path)
+    with pipeline.run_lock():
+        try:
+            with pipeline.run_lock():
+                raise AssertionError("second run should be refused")
+        except pipeline.RunInProgress:
+            pass
+    with pipeline.run_lock():  # free again once the first run ends
+        pass
 
 
 def test_job_id_keeps_query_string():

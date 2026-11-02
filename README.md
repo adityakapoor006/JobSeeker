@@ -1,6 +1,6 @@
 # JobSeeker
 
-JobSeeker is a personal AI recruiter. Twice a day it searches the career sites of your target companies, plus LinkedIn and Naukri. It confirms each role is still open and scores how well your resume fits it. For the strongest matches, it writes a tailored resume that only uses facts already in your resume.
+JobSeeker is a personal AI recruiter. Twice a day it searches the career sites of your target companies, plus LinkedIn, Naukri, Indeed and Foundit. It confirms each role is still open and scores how well your resume fits it. For the strongest matches, it writes a tailored resume that only uses facts already in your resume.
 
 It runs on your own machine. Your resume, API keys, job database and reports stay local and are never committed.
 
@@ -9,7 +9,7 @@ It runs on your own machine. Your resume, API keys, job database and reports sta
 | Step | What happens |
 |---|---|
 | Resume analysis | Once per resume version: your top 5 target job titles, core strengths and skill gaps |
-| Search | Your target companies' own career sites, plus LinkedIn and Naukri (through Apify) for those companies and the wider market |
+| Search | Your target companies' own career sites, plus LinkedIn, Naukri, Indeed and Foundit (through Apify) for those companies and the wider market |
 | Filter | Keeps roles in your cities (default Bengaluru, Gurugram and Pune) that match your title and experience level |
 | Open-role check | Confirms each role is still live. Closed roles are hidden; roles it can't confirm are marked "unconfirmed" |
 | Fit score | 0-100, computed from evidence in your resume, not a number the model picks |
@@ -25,7 +25,7 @@ flowchart LR
     A --> C[Collect<br/>pipeline.collect]
     subgraph Sources
       D[Career-site feeds<br/>sources/direct.py]
-      B[LinkedIn and Naukri<br/>sources/apify.py]
+      B[LinkedIn, Naukri, Indeed, Foundit<br/>sources/apify.py]
     end
     D --> C
     B --> C
@@ -38,7 +38,7 @@ flowchart LR
     S --> UI[Dashboard<br/>app.py]
 ```
 
-A run (`pipeline.run`) goes through these steps in order. A source that fails is reported in the run summary and never stops the run.
+A run (`pipeline.run`) goes through these steps in order. A source that fails is reported in the run summary, with its HTTP status where there is one, and never stops the run. Only one run happens at a time: a second run started from the dashboard, the command line or the schedule is refused while one is in progress, because overlapping runs exceed Apify's limit of 5 concurrent jobs on the free plan.
 
 ### Modules
 
@@ -49,13 +49,14 @@ A run (`pipeline.run`) goes through these steps in order. A source that fails is
 | `jobseeker/config.py` | Default settings, city aliases, and the career-site feed for each company (`FEEDS`) |
 | `jobseeker/sources/base.py` | Shared `Job` shape and the title, location and experience filters |
 | `jobseeker/sources/direct.py` | One fetcher per career-site platform |
-| `jobseeker/sources/apify.py` | LinkedIn and Naukri searches through Apify actors |
+| `jobseeker/sources/apify.py` | LinkedIn, Naukri, Indeed and Foundit searches through Apify actors |
 | `jobseeker/liveness.py` | Checks whether each stored role is still open |
 | `jobseeker/llm.py` | OpenAI prompts for resume analysis, fit scoring and tailoring, with strict truth rules |
 | `jobseeker/resume.py` | Reads the newest resume (`.docx`, `.pdf`, `.txt` or `.md`) and hashes it |
 | `jobseeker/render.py` | Turns a tailored Markdown resume into a `.docx` file |
 | `jobseeker/db.py` | SQLite schema and helpers. Each role is stored once, so it is scored and tailored only once |
 | `app.py` | Streamlit dashboard |
+| `jobseeker/schedule.py` | Turns the scheduled runs on and off from the dashboard |
 | `scripts/install_schedule.sh` | Installs a macOS launchd job that runs at 09:00 and 21:00 |
 
 ### Career-site feeds
@@ -90,7 +91,7 @@ A role listed by its source during the current run is open. Any other stored rol
 | Google, Apple | The job page falls back to a search page or has no job data |
 | Sitemap sites, Deloitte | The job link redirects away from the job page or to an error page |
 | Atlassian, Juspay, Goldman Sachs | The role is missing from the full listing |
-| LinkedIn, Naukri | The page says the role has expired, or it hasn't appeared in any search for 14 days |
+| LinkedIn, Naukri, Indeed, Foundit | The page says the role has expired, or it hasn't appeared in any search for 14 days |
 
 A check that fails or is ambiguous never closes a role; it stays "unconfirmed".
 
@@ -121,7 +122,7 @@ Then fill in `.env`:
 |---|---|
 | `OPENAI_API_KEY` | Resume analysis, fit scoring and tailoring |
 | `OPENAI_MODEL` | Model name, default `gpt-4o` |
-| `APIFY_TOKEN` | LinkedIn and Naukri. Optional: without it, only career sites are searched |
+| `APIFY_TOKEN` | LinkedIn, Naukri, Indeed and Foundit. Optional: without it, only career sites are searched |
 
 Put your resume in `data/resume/`. The newest file there is used, and changing it triggers a new resume analysis.
 
@@ -161,7 +162,7 @@ This changes your cities from the command line.
 scripts/install_schedule.sh
 ```
 
-This installs the twice-daily schedule on macOS.
+This installs the twice-daily schedule on macOS. You can also turn it on or off with the **Scheduled runs** switch in the dashboard.
 
 ### Dashboard
 
@@ -172,13 +173,13 @@ This installs the twice-daily schedule on macOS.
 | Resume analysis | Target roles, strengths and gaps. Upload a new resume here |
 | Settings | Cities, remote roles, years of experience, and the target company list |
 
-**Run now** runs a full search. **Check roles are open** rechecks every stored role.
+**Scheduled runs** turns the 9 am and 9 pm runs on or off; each run spends Apify credit, and OpenAI credit for scoring and tailoring. **Run now** runs a full search. **Check roles are open** rechecks every stored role.
 
 ### Customising
 
 - **Companies:** add or remove them in the dashboard's Settings tab. A new company without a feed is searched on LinkedIn and Naukri.
 - **Career-site feed:** add an entry to `FEEDS` in `jobseeker/config.py`. For a Workday site, set `tenant`, `dc` and `site` from its `myworkdayjobs.com` URL. For Greenhouse, set `board`.
-- **Limits:** `data/settings.json` controls `max_results_per_company`, `max_jobs_to_score` (150 per run) and `max_tailored_per_run` (15 per run). These cap OpenAI and Apify spend.
+- **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (150 per run) and `max_tailored_per_run` (15 per run). These cap OpenAI and Apify spend.
 
 ## Output
 
@@ -194,7 +195,8 @@ This installs the twice-daily schedule on macOS.
 ## Costs
 
 - **OpenAI:** scoring and tailoring use your OpenAI key. Roles that fail to score, for example when credits run out, are retried on the next run.
-- **Apify:** LinkedIn and Naukri searches cost about $0.22 per run. At two runs a day, that is more than Apify's $5 monthly free credit.
+- **Apify:** LinkedIn and Naukri cost about $0.22 per run, Indeed about $0.03, and Foundit up to $0.10 (it is billed per job and capped by `foundit_max_jobs`, default 40; set it to 0 to turn Foundit off). At two runs a day, that is more than Apify's $5 monthly free credit.
+- **Board data:** Indeed results give the searched city as the location, because Indeed returns coordinates without a city name. Foundit results include skills and experience but not the full job description, so their fit scores rest on less detail.
 
 ## Tests
 

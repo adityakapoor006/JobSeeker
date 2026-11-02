@@ -34,7 +34,10 @@ def main() -> None:
                 raise SystemExit(f"No job with id {args.tailor}")
             print(pipeline.tailor(conn, dict(row), resume))
         return
-    print(json.dumps(pipeline.run(), indent=2))
+    try:
+        print(json.dumps(pipeline.run(), indent=2))
+    except pipeline.RunInProgress as exc:
+        raise SystemExit(str(exc)) from None
 
 
 if __name__ == "__main__":

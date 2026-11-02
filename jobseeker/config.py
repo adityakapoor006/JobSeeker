@@ -68,6 +68,8 @@ DEFAULT_SETTINGS = {
     "search_all_companies": True,
     "max_results_per_search": 25,
     "max_results_per_company": 60,
+    # Foundit is billed per job (about $0.0025 each); 0 turns it off.
+    "foundit_max_jobs": 40,
     # Caps LLM spend per run; the best keyword matches are scored first.
     "max_jobs_to_score": 150,
     "max_tailored_per_run": 15,

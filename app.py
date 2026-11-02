@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from jobseeker import db, liveness, pipeline
+from jobseeker import db, liveness, pipeline, schedule
 from jobseeker.config import FEEDS, RESUME_DIR, SETTINGS_PATH, env, load_settings, save_settings
 from jobseeker.resume import latest_resume, load_resume
 
@@ -42,12 +42,20 @@ if last:
     for error in summary["errors"]:
         top[0].warning(error)
 if not env("APIFY_TOKEN"):
-    top[0].info("Add APIFY_TOKEN to .env to include LinkedIn and Naukri.")
-if top[1].button("Run now", type="primary"):
-    with st.spinner("Searching, scoring and tailoring. This can take several minutes."):
-        result = pipeline.run()
-    st.success(f"{result['new']} new roles. Report: {result['report']}")
+    top[0].info("Add APIFY_TOKEN to .env to include LinkedIn, Naukri, Indeed and Foundit.")
+scheduled = schedule.is_enabled()
+wanted = top[1].toggle("Scheduled runs (9 am, 9 pm)", scheduled,
+                       help="Each run spends Apify credit and, once scoring works, OpenAI credit.")
+if wanted != scheduled:
+    schedule.enable() if wanted else schedule.disable()
     st.rerun()
+if top[1].button("Run now", type="primary"):
+    try:
+        with st.spinner("Searching, scoring and tailoring. This can take several minutes."):
+            pipeline.run()
+        st.rerun()
+    except pipeline.RunInProgress as exc:
+        top[0].warning(str(exc))
 
 
 def role_table(bucket: str) -> None:

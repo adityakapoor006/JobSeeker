@@ -1,12 +1,16 @@
 """One full run: analyse resume, collect, score, bucket, tailor, report."""
+import fcntl
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime
+
+import httpx
 
 from . import db, liveness, llm
 from .render import markdown_to_docx
-from .config import FEEDS, OUTPUT_DIR, env, load_settings, location_terms
+from .config import DATA_DIR, FEEDS, OUTPUT_DIR, env, load_settings, location_terms
 from .resume import load_resume
 from .sources import apify
 from .sources.base import Job, fits_experience, in_locations
@@ -21,6 +25,30 @@ STATUS_CREDIT = {"met": 1.0, "partial": 0.5, "missing": 0.0}
 EVIDENCE_OVERLAP = 0.8
 OPEN_LABEL = {"active": "confirmed", "unverified": "unconfirmed"}
 INTERNAL_HEADING = "ADDITIONAL VERIFIED DETAIL"
+LOCK_PATH = DATA_DIR / "run.lock"
+BOARD_WORKERS = 4  # Apify's free plan runs at most 5 actor jobs at once
+
+
+class RunInProgress(RuntimeError):
+    pass
+
+
+@contextmanager
+def run_lock():
+    """One run at a time: overlapping runs exceed Apify's concurrent-job limit."""
+    DATA_DIR.mkdir(exist_ok=True)
+    with open(LOCK_PATH, "w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RunInProgress("Another JobSeeker run is already in progress. Try again when it finishes.") from None
+        yield
+
+
+def describe_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
 
 
 def bucket_for(score: int) -> str:
@@ -67,10 +95,10 @@ def collect(settings: dict, roles: list[str]) -> tuple[list[Job], dict, list[str
             jobs += found
         except Exception as exc:  # one broken site must not stop the run
             counts[company] = None
-            errors.append(f"{company} careers feed failed: {type(exc).__name__}")
+            errors.append(f"{company} careers feed failed: {describe_error(exc)}")
 
     if not env("APIFY_TOKEN"):
-        errors.append("LinkedIn and Naukri skipped: APIFY_TOKEN is not set")
+        errors.append("LinkedIn, Naukri, Indeed and Foundit skipped: APIFY_TOKEN is not set")
         return jobs, counts, errors
 
     uncovered = [c for c in settings["companies"] if c not in FEEDS or FEEDS[c].get("partial")]
@@ -83,13 +111,18 @@ def collect(settings: dict, roles: list[str]) -> tuple[list[Job], dict, list[str
             for role in roles[:3]:
                 searches.append(("LinkedIn", lambda r=role, loc=location: apify.search_linkedin(r, loc, limit)))
                 searches.append(("Naukri", lambda r=role, loc=location: apify.search_naukri(r, loc, limit, years)))
-    with ThreadPoolExecutor(4) as pool:
+                searches.append(("Indeed", lambda r=role, loc=location: apify.search_indeed(r, loc, limit)))
+    if settings["search_all_companies"] and settings["foundit_max_jobs"]:
+        # Foundit charges per job, so it gets one capped search across every city.
+        searches.append(("Foundit", lambda: apify.search_foundit(
+            roles[:3], settings["locations"], settings["foundit_max_jobs"], years)))
+    with ThreadPoolExecutor(BOARD_WORKERS) as pool:
         futures = [(name, pool.submit(fn)) for name, fn in searches]
     for name, future in futures:
         try:
             jobs += future.result()
         except Exception as exc:
-            errors.append(f"{name} search failed: {type(exc).__name__}")
+            errors.append(f"{name} search failed: {describe_error(exc)}")
 
     for company in uncovered:
         counts[company] = sum(_same_company(j.company, company) for j in jobs)
@@ -325,6 +358,11 @@ def write_report(conn, analysis: dict, settings: dict, counts: dict, errors: lis
 
 
 def run() -> dict:
+    with run_lock():
+        return _run()
+
+
+def _run() -> dict:
     settings = load_settings()
     resume, resume_hash = load_resume()
     with db.connect() as conn:
