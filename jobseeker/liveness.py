@@ -149,7 +149,8 @@ def expired_board_role(row: dict) -> bool:
 
 def verify_jobs(conn, seen_before: str | None = None) -> dict:
     """Check roles not seen in this run's listings; a listed role is already known to be live."""
-    query = "SELECT * FROM jobs WHERE active_state != 'closed' AND status != 'dismissed'"
+    # Roles you applied to or dismissed are not rechecked.
+    query = "SELECT * FROM jobs WHERE active_state != 'closed' AND status = 'new'"
     args = ()
     if seen_before:
         query += " AND last_seen < ?"

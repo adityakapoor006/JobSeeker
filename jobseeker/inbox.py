@@ -182,7 +182,7 @@ def record(conn, messages: list[EmailMessage], companies: list[str], use_llm: bo
              details["summary"] or body[:200], details["next_step"], details["deadline"], db.now()))
         stats["emails"] += 1
         if job and category in JOB_STATUS:
-            conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (JOB_STATUS[category], job["id"]))
+            db.set_status(conn, job["id"], JOB_STATUS[category])
             stats["updated_roles"] += 1
     return stats
 

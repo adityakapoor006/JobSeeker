@@ -470,3 +470,27 @@ def test_provider_fallback_and_out_of_credit(monkeypatch):
     assert tried == ["openai", "anthropic", "anthropic"]
     monkeypatch.setenv("LLM_PROVIDERS", "anthropic")
     assert llm.providers() == ["anthropic"]
+
+
+def test_applied_roles_leave_results_and_are_skipped_by_later_runs():
+    from jobseeker import db
+    from jobseeker.pipeline import _dedupe_key, handled_keys
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    for job_id, title in (("a", "Data Engineer"), ("b", "Platform Engineer"), ("c", "ML Engineer")):
+        conn.execute("INSERT INTO jobs (id, company, title, url, source, first_seen, last_seen, fit_score, active_state)"
+                     " VALUES (?, 'Walmart', ?, 'u', 'careers', 't', 't', 90, 'active')", (job_id, title))
+    db.set_status(conn, "a", "applied")
+    first = conn.execute("SELECT applied_at FROM jobs WHERE id = 'a'").fetchone()["applied_at"]
+    db.set_status(conn, "a", "interviewing")
+    assert conn.execute("SELECT applied_at FROM jobs WHERE id = 'a'").fetchone()["applied_at"] == first
+    db.set_status(conn, "b", "dismissed")
+    assert [r["id"] for r in company_openings(conn, ["Walmart"])["Walmart"]] == ["c"]
+    # A LinkedIn copy of the applied role is skipped; other roles are not.
+    copy = Job("Walmart", "Data Engineer", "Bengaluru", "u1", "linkedin")
+    other = Job("Walmart", "Staff Engineer", "Bengaluru", "u2", "linkedin")
+    handled = handled_keys(conn)
+    assert _dedupe_key(copy) in handled and _dedupe_key(other) not in handled
+    db.set_status(conn, "a", "new")
+    assert conn.execute("SELECT applied_at FROM jobs WHERE id = 'a'").fetchone()["applied_at"] is None

@@ -140,13 +140,22 @@ def _same_company(found: str, wanted: str) -> bool:
 def company_openings(conn, companies: list[str]) -> dict[str, list[dict]]:
     """Every open role for each target company, scored or not, best fit first."""
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM jobs WHERE active_state != 'closed' AND status != 'dismissed'"
+        "SELECT * FROM jobs WHERE active_state != 'closed' AND status = 'new'"
         " ORDER BY COALESCE(fit_score, -1) DESC, title")]
     return {company: [r for r in rows if _same_company(r["company"], company)] for company in companies}
 
 
+def _key(company: str, title: str) -> tuple[str, str]:
+    return re.sub(r"\W+", "", company.lower()), re.sub(r"\W+", "", title.lower())
+
+
 def _dedupe_key(job: Job) -> tuple[str, str]:
-    return re.sub(r"\W+", "", job.company.lower()), re.sub(r"\W+", "", job.title.lower())
+    return _key(job.company, job.title)
+
+
+def handled_keys(conn) -> set[tuple[str, str]]:
+    """Roles you applied to or dismissed; other copies of them (e.g. on another job board) are skipped."""
+    return {_key(r["company"], r["title"]) for r in conn.execute("SELECT company, title FROM jobs WHERE status != 'new'")}
 
 
 def filter_jobs(jobs: list[Job], settings: dict) -> list[Job]:
@@ -171,7 +180,8 @@ def priority(job: dict, resume_words: set[str], target: set[str]) -> tuple:
 
 def score_new_jobs(conn, settings: dict, resume: str, resume_hash: str) -> tuple[int, int]:
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM jobs WHERE active_state != 'closed' AND (resume_hash IS NULL OR resume_hash != ?)",
+        "SELECT * FROM jobs WHERE active_state != 'closed' AND status = 'new'"
+        " AND (resume_hash IS NULL OR resume_hash != ?)",
         (resume_hash,)) if not SKIP_SCORING.search(r["title"])]
     resume_words = set(re.findall(r"[a-z][a-z+#.]+", resume.lower()))
     target = {c.lower() for c in settings["companies"]}
@@ -289,7 +299,7 @@ def tailor(conn, row: dict, resume: str) -> str:
 def tailor_pending(conn, resume: str, limit: int) -> tuple[int, int]:
     """Only High roles are tailored automatically; Medium and Stretch are tailored on request."""
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM jobs WHERE bucket = 'High' AND tailored_path IS NULL"
+        "SELECT * FROM jobs WHERE bucket = 'High' AND tailored_path IS NULL AND status = 'new'"
         " AND active_state != 'closed' ORDER BY fit_score DESC LIMIT ?", (limit,))]
     done = 0
     for row in rows:
@@ -312,7 +322,7 @@ def _table(rows: list[dict]) -> str:
 def write_report(conn, analysis: dict, settings: dict, counts: dict, errors: list[str], new_ids: set[str],
                  checked: dict) -> str:
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM jobs WHERE fit_score IS NOT NULL AND status != 'dismissed' AND active_state != 'closed'"
+        "SELECT * FROM jobs WHERE fit_score IS NOT NULL AND status = 'new' AND active_state != 'closed'"
         " ORDER BY fit_score DESC")]
     open_count = sum(r["active_state"] == "active" for r in rows)
     out = [f"# Job run {datetime.now():%Y-%m-%d %H:%M}", "",
@@ -333,9 +343,9 @@ def write_report(conn, analysis: dict, settings: dict, counts: dict, errors: lis
     out += ["", f"Excluded below 40: {excluded} roles.", "", "## Companies with no relevant openings", ""]
     bucketed = {r["company"].lower() for r in rows if r["bucket"] != "Excluded"}
     pending = {r[0].lower() for r in conn.execute(
-        "SELECT company FROM jobs WHERE fit_score IS NULL AND active_state != 'closed'")}
+        "SELECT company FROM jobs WHERE fit_score IS NULL AND status = 'new' AND active_state != 'closed'")}
     waiting = len(conn.execute(
-        "SELECT id FROM jobs WHERE fit_score IS NULL AND active_state != 'closed'").fetchall())
+        "SELECT id FROM jobs WHERE fit_score IS NULL AND status = 'new' AND active_state != 'closed'").fetchall())
     not_searched = []
     for company in settings["companies"]:
         if counts.get(company) is None:
@@ -379,7 +389,8 @@ def _run() -> dict:
         roles = [r["title"] for r in analysis.get("target_roles", [])]
         run_start = db.now()
         found, counts, errors = collect(settings, roles)
-        kept = filter_jobs(found, settings)
+        handled = handled_keys(conn)
+        kept = [job for job in filter_jobs(found, settings) if _dedupe_key(job) not in handled]
         new_ids = {job.id for job in kept if db.upsert_job(conn, job)}
         conn.commit()
         checked = liveness.verify_jobs(conn, run_start)

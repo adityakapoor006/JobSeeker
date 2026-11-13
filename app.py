@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from jobseeker import companies, db, inbox, liveness, pipeline, schedule
-from jobseeker.config import FEEDS, RESUME_DIR, SETTINGS_PATH, env, load_settings, save_settings
+from jobseeker.config import CITY_ALIASES, FEEDS, RESUME_DIR, SETTINGS_PATH, env, load_settings, save_settings
 from jobseeker.resume import latest_resume, load_resume
 
 st.set_page_config(page_title="JobSeeker", layout="wide")
@@ -30,7 +30,14 @@ if not SETTINGS_PATH.exists():
     st.stop()
 
 with db.connect() as conn:
-    jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs WHERE fit_score IS NOT NULL AND active_state != 'closed' ORDER BY fit_score DESC")]
+    jobs = [dict(r) for r in conn.execute("SELECT * FROM jobs WHERE fit_score IS NOT NULL AND status = 'new'"
+                                          " AND active_state != 'closed' ORDER BY fit_score DESC")]
+    applied = [dict(r) for r in conn.execute(
+        f"SELECT * FROM jobs WHERE status IN ({','.join('?' * len(db.APPLIED_STATUSES))})"
+        " ORDER BY applied_at DESC", db.APPLIED_STATUSES)]
+    # The newest email about each role; later rows overwrite earlier ones.
+    latest_email = {r["job_id"]: r for r in conn.execute(
+        "SELECT job_id, category, received_at FROM emails WHERE job_id IS NOT NULL ORDER BY received_at")}
     last = conn.execute("SELECT * FROM runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
     analysis = conn.execute("SELECT analysis_json FROM analysis ORDER BY created_at DESC LIMIT 1").fetchone()
 
@@ -58,16 +65,45 @@ if top[1].button("Run now", type="primary"):
         top[0].warning(str(exc))
 
 
+OPEN_LABEL = {"active": "confirmed", "closed": "closed", "unverified": "unconfirmed"}
+
+st.subheader("Search and filter")
+bar = st.columns([3, 2, 2, 2, 1])
+query = bar[0].text_input("Search", placeholder="Company, role or city, e.g. data engineer").lower().split()
+company_filter = bar[1].multiselect("Company", sorted({j["company"] for j in jobs + applied}))
+city_filter = bar[2].multiselect("City", settings["locations"] + ["Remote"])
+source_filter = bar[3].multiselect("Source", sorted({j["source"] for j in jobs + applied}))
+min_fit = bar[4].number_input("Min fit", 0, 100, 0, step=5)
+checks = st.columns(2)
+in_descriptions = checks[0].checkbox("Search job descriptions too (for skills such as spark or kafka)")
+open_only = checks[1].checkbox("Only roles confirmed open")
+city_terms = [t for c in city_filter for t in CITY_ALIASES.get(c.strip().lower(), [c.strip().lower()])]
+
+
+def matches(job: dict) -> bool:
+    """Every search word must appear in the role's company, title or location (or description, if ticked)."""
+    fields = ("company", "title", "location") + (("description", "fit_json") if in_descriptions else ())
+    text = " ".join(str(job[k] or "") for k in fields).lower()
+    return (all(word in text for word in query)
+            and (not company_filter or job["company"] in company_filter)
+            and (not city_terms or any(t in (job["location"] or "").lower() for t in city_terms))
+            and (not source_filter or job["source"] in source_filter)
+            and (job["fit_score"] or 0) >= min_fit
+            and (not open_only or job["active_state"] == "active"))
+
+
 def role_table(bucket: str) -> None:
-    rows = [j for j in jobs if j["bucket"] == bucket and j["status"] != "dismissed"]
+    in_bucket = [j for j in jobs if j["bucket"] == bucket]
+    rows = [j for j in in_bucket if matches(j)]
     if not rows:
-        st.write("No roles in this bucket.")
+        st.write("No roles match the filters." if in_bucket else "No roles in this bucket.")
         return
+    st.caption(f"{len(rows)} of {len(in_bucket)} roles")
     frame = pd.DataFrame([{
         "Fit": j["fit_score"], "Company": j["company"], "Role": j["title"], "Location": j["location"],
-        "Open": "confirmed" if j["active_state"] == "active" else "unconfirmed",
+        "Open": OPEN_LABEL[j["active_state"]],
         "Checked": (j["verified_at"] or "")[:16].replace("T", " "),
-        "Source": j["source"], "Status": j["status"], "JD": j["url"],
+        "Source": j["source"], "JD": j["url"],
         "Why": json.loads(j["fit_json"]).get("justification", ""),
     } for j in rows])
     st.dataframe(frame, hide_index=True, width="stretch",
@@ -96,8 +132,10 @@ def role_table(bucket: str) -> None:
     for column, (label, status) in zip(buttons[1:], (("Mark applied", "applied"), ("Dismiss", "dismissed"))):
         if column.button(label, key=f"{status}_{job['id']}"):
             with db.connect() as conn:
-                conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job["id"]))
+                db.set_status(conn, job["id"], status)
             st.rerun()
+    st.caption("Applied roles move to the Applied tab. Applied and dismissed roles are left out of later runs, "
+               "including copies on other job boards.")
 
 
 if top[1].button("Check roles are open"):
@@ -105,8 +143,8 @@ if top[1].button("Check roles are open"):
         result = liveness.verify_jobs(conn)
     st.success(f"{result['active']} open, {result['closed']} closed and removed, {result['unverified']} unconfirmed")
 
-tabs = st.tabs(["Open positions", "High (80-100)", "Medium (60-79)", "Stretch (40-59)", "Email updates",
-                "Resume analysis", "Settings"])
+tabs = st.tabs(["Open positions", "High (80-100)", "Medium (60-79)", "Stretch (40-59)", f"Applied ({len(applied)})",
+                "Email updates", "Resume analysis", "Settings"])
 for tab, bucket in zip(tabs[1:], ("High", "Medium", "Stretch")):
     with tab:
         role_table(bucket)
@@ -123,18 +161,50 @@ with tabs[0]:
         "Searched through": "Career site" if company in FEEDS else "LinkedIn/Naukri only",
     } for company, rows in openings.items()]), hide_index=True, width="stretch")
     picked = st.selectbox("Show roles for", ["All companies"] + list(openings))
-    chosen = [r for c, rows in openings.items() if picked in ("All companies", c) for r in rows]
+    chosen = [r for c, rows in openings.items() if picked in ("All companies", c) for r in rows if matches(r)]
     if chosen:
         st.dataframe(pd.DataFrame([{
             "Fit": j["fit_score"], "Company": j["company"], "Role": j["title"], "Location": j["location"],
-            "Open": "confirmed" if j["active_state"] == "active" else "unconfirmed",
+            "Open": OPEN_LABEL[j["active_state"]],
             "Source": j["source"], "JD": j["url"],
         } for j in chosen]), hide_index=True, width="stretch",
             column_config={"JD": st.column_config.LinkColumn("JD", display_text="Open")})
     else:
-        st.write("No open roles matching your cities and experience.")
+        st.write("No open roles match your cities, experience and filters.")
 
 with tabs[4]:
+    rows = [j for j in applied if matches(j)]
+    if not rows:
+        st.write("No applied roles match the filters." if applied else
+                 "Roles you mark as applied, or that an application email matches, show here.")
+    else:
+        st.dataframe(pd.DataFrame([{
+            "Applied": (j["applied_at"] or "")[:10], "Status": j["status"].capitalize(), "Company": j["company"],
+            "Role": j["title"], "Location": j["location"], "Fit": j["fit_score"],
+            "Latest email": (f"{latest_email[j['id']]['category']}, {latest_email[j['id']]['received_at'][:10]}"
+                             if j["id"] in latest_email else ""),
+            "Posting": OPEN_LABEL[j["active_state"]], "Source": j["source"], "JD": j["url"],
+        } for j in rows]), hide_index=True, width="stretch",
+            column_config={"JD": st.column_config.LinkColumn("JD", display_text="Open")})
+        labels = {f"{j['company']} | {j['title']} | {j['status']}": j for j in rows}
+        job = labels[st.selectbox("Update a role", list(labels), key="pick_applied")]
+        left, middle, right = st.columns([2, 1, 1])
+        new_status = left.selectbox("Status", db.APPLIED_STATUSES, db.APPLIED_STATUSES.index(job["status"]),
+                                    format_func=str.capitalize, key=f"status_{job['id']}")
+        if middle.button("Save status", key=f"save_{job['id']}") and new_status != job["status"]:
+            with db.connect() as conn:
+                db.set_status(conn, job["id"], new_status)
+            st.rerun()
+        if right.button("Move back to results", key=f"undo_{job['id']}"):
+            with db.connect() as conn:
+                db.set_status(conn, job["id"], "new")
+            st.rerun()
+        if job["tailored_path"] and Path(job["tailored_path"]).exists():
+            path = Path(job["tailored_path"])
+            st.download_button("Download the resume you tailored for this role", path.read_bytes(), path.name,
+                               key=f"dl_applied_{job['id']}")
+
+with tabs[5]:
     if not inbox.configured():
         st.info("Add EMAIL_ADDRESS and EMAIL_APP_PASSWORD to .env to find application updates in your inbox. "
                 "For Gmail, use an app password. The inbox is only read: nothing is marked read, moved or deleted.")
@@ -158,7 +228,7 @@ with tabs[4]:
     else:
         st.write("No job emails found yet.")
 
-with tabs[5]:
+with tabs[6]:
     st.caption(f"Resume in use: {latest_resume().name}")
     upload = st.file_uploader("Replace resume (analysis reruns on the next run)", ["docx", "pdf", "txt", "md"])
     if upload and st.button("Use this resume"):
@@ -173,7 +243,7 @@ with tabs[5]:
         st.subheader("Gaps")
         st.table(pd.DataFrame(data.get("gaps", [])))
 
-with tabs[6]:
+with tabs[7]:
     st.subheader("Locations")
     save_location_form("settings")
     st.subheader("Experience")

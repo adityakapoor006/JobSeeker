@@ -100,7 +100,13 @@ A role listed by its source during the current run is open. Any other stored rol
 
 A check that fails or is ambiguous never closes a role; it stays "unconfirmed".
 
-### Email updates
+### Searching results and tracking applications
+
+The filter bar above the tabs applies to every list. Search matches company, role and city; tick "Search job descriptions too" to search for skills. You can also filter by company, city, source, minimum fit and confirmed-open roles.
+
+"Mark applied" moves a role to the Applied tab, where you can update its status (applied, assessment, interviewing, offer, rejected) or move it back to the results. Application emails move matched roles there automatically. Later runs skip applied and dismissed roles, including copies of the same role on other job boards, so they aren't scored, tailored or rechecked again.
+
+## Email updates
 
 When `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` are set, each run also checks your inbox over IMAP. You can also check it with **Check email now** in the dashboard.
 

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     tailored_path TEXT,
     status TEXT NOT NULL DEFAULT 'new',
     active_state TEXT NOT NULL DEFAULT 'unverified',
-    verified_at TEXT
+    verified_at TEXT,
+    applied_at TEXT
 );
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,11 +73,26 @@ def connect():
     if "active_state" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN active_state TEXT NOT NULL DEFAULT 'unverified'")
         conn.execute("ALTER TABLE jobs ADD COLUMN verified_at TEXT")
+    if "applied_at" not in columns:
+        conn.execute("ALTER TABLE jobs ADD COLUMN applied_at TEXT")
     try:
         yield conn
         conn.commit()
     finally:
         conn.close()
+
+
+# Statuses of roles you have applied to. They leave the results lists and later runs skip them.
+APPLIED_STATUSES = ("applied", "assessment", "interviewing", "offer", "rejected")
+
+
+def set_status(conn, job_id: str, status: str) -> None:
+    """applied_at keeps the first time a role moved to an applied status; moving back to "new" clears it."""
+    if status in APPLIED_STATUSES:
+        conn.execute("UPDATE jobs SET status = ?, applied_at = COALESCE(applied_at, ?) WHERE id = ?",
+                     (status, now(), job_id))
+    else:
+        conn.execute("UPDATE jobs SET status = ?, applied_at = NULL WHERE id = ?", (status, job_id))
 
 
 def now() -> str:
