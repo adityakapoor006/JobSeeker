@@ -335,3 +335,12 @@ def test_email_rules_skip_newsletters_and_alerts():
     assert classify("Next steps", "Please complete the online assessment by Friday") == "Assessment"
     assert ALERT_SENDER.search("jobalerts-noreply@linkedin.com") and ALERT_SENDER.search("noreply@unstop.news")
     assert not ALERT_SENDER.search("careers@stripe.com")
+
+
+def test_board_listing_without_company_is_skipped():
+    from jobseeker.sources.apify import _jobs
+    items = [{"title": "Cloud Architect", "employer": {"name": None}, "url": "u1", "description": {"text": ""}},
+             {"title": "Backend Engineer", "employer": {"name": "Acme"}, "url": "u2", "description": None},
+             {"title": None}]
+    jobs = _jobs(items, lambda item: indeed_item_to_job(item, "Pune"))
+    assert [j.company for j in jobs] == ["Acme"]

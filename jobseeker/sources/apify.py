@@ -23,8 +23,21 @@ def _run(actor: str, payload: dict) -> list[dict]:
     return response.json()
 
 
+def _jobs(items: list[dict], to_job) -> list[Job]:
+    """Maps board items to jobs; one malformed listing is skipped instead of failing the search."""
+    jobs = []
+    for item in items:
+        try:
+            job = to_job(item)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if job and job.company:
+            jobs.append(job)
+    return jobs
+
+
 def linkedin_item_to_job(item: dict) -> Job | None:
-    title, company = item.get("title", ""), item.get("companyName", "")
+    title, company = item.get("title") or "", item.get("companyName") or ""
     if not relevant_title(title) or SKIP_COMPANY.search(company):
         return None
     # Keep the employer's own posting when LinkedIn exposes one.
@@ -34,8 +47,8 @@ def linkedin_item_to_job(item: dict) -> Job | None:
 
 
 def naukri_item_to_job(item: dict) -> Job | None:
-    title = item.get("title", "")
-    company = (item.get("company") or {}).get("name", "")
+    title = item.get("title") or ""
+    company = (item.get("company") or {}).get("name") or ""
     if item.get("consultant") or not relevant_title(title) or SKIP_COMPANY.search(company):
         return None
     experience = item.get("experience") or {}
@@ -53,7 +66,7 @@ def naukri_item_to_job(item: dict) -> Job | None:
 
 def indeed_item_to_job(item: dict, location: str) -> Job | None:
     """Indeed gives coordinates but no city name, so the searched city stands in."""
-    title, company = item.get("title", ""), (item.get("employer") or {}).get("name", "")
+    title, company = item.get("title") or "", (item.get("employer") or {}).get("name") or ""
     if item.get("expired") or not relevant_title(title) or SKIP_COMPANY.search(company):
         return None
     return Job(company, title, f"{location}, India", item["url"], "indeed",
@@ -62,7 +75,7 @@ def indeed_item_to_job(item: dict, location: str) -> Job | None:
 
 def foundit_item_to_job(item: dict) -> Job | None:
     """Foundit search results carry skills and experience but no full description."""
-    title, company = item.get("title", ""), item.get("company", "")
+    title, company = item.get("title") or "", item.get("company") or ""
     if not item.get("job_id") or not relevant_title(title) or SKIP_COMPANY.search(company):
         return None
     scraped = item.get("scraped_at")
@@ -80,22 +93,22 @@ def search_linkedin(keywords: str, location: str, limit: int, companies: list[st
     payload = {"keywords": keywords, "location": f"{location}, India", "datePosted": "r604800", "limit": limit}
     if companies:
         payload["companyName"] = companies
-    return [job for item in _run(LINKEDIN_ACTOR, payload) if (job := linkedin_item_to_job(item))]
+    return _jobs(_run(LINKEDIN_ACTOR, payload), linkedin_item_to_job)
 
 
 def search_naukri(keywords: str, location: str, limit: int, years: int) -> list[Job]:
     payload = {"keywords": keywords, "location": location, "experience": years,
                "jobAge": "7", "sort": "f", "limit": limit}
-    return [job for item in _run(NAUKRI_ACTOR, payload) if (job := naukri_item_to_job(item))]
+    return _jobs(_run(NAUKRI_ACTOR, payload), naukri_item_to_job)
 
 
 def search_indeed(keywords: str, location: str, limit: int) -> list[Job]:
     payload = {"country": "in", "title": keywords, "location": location, "limit": limit, "datePosted": "7"}
-    return [job for item in _run(INDEED_ACTOR, payload) if (job := indeed_item_to_job(item, location))]
+    return _jobs(_run(INDEED_ACTOR, payload), lambda item: indeed_item_to_job(item, location))
 
 
 def search_foundit(keywords: list[str], locations: list[str], limit: int, years: int) -> list[Job]:
     # Foundit's experience filter is the role's minimum, so allow roles asking a little less.
     payload = {"searchKeywords": keywords, "location": ",".join(locations), "maxJobs": limit,
                "experienceMinYears": max(years - 3, 0), "postedWithinDays": "7"}
-    return [job for item in _run(FOUNDIT_ACTOR, payload) if (job := foundit_item_to_job(item))]
+    return _jobs(_run(FOUNDIT_ACTOR, payload), foundit_item_to_job)
