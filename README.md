@@ -55,7 +55,8 @@ A run (`pipeline.run`) goes through these steps in order. A source that fails is
 | `jobseeker/liveness.py` | Checks whether each stored role is still open |
 | `jobseeker/companies.py` | Checks a company name is real before it joins the target list |
 | `jobseeker/inbox.py` | Reads job emails from your inbox, read-only, and links them to stored roles |
-| `jobseeker/llm.py` | OpenAI prompts for resume analysis, fit scoring and tailoring, with strict truth rules |
+| `jobseeker/llm.py` | Prompts for resume analysis, fit scoring and tailoring, with strict truth rules; picks OpenAI or Claude and falls back between them |
+| `jobseeker/llm_claude.py` | The same JSON calls through the Claude API |
 | `jobseeker/resume.py` | Reads the newest resume (`.docx`, `.pdf`, `.txt` or `.md`) and hashes it |
 | `jobseeker/render.py` | Turns a tailored Markdown resume into a `.docx` file |
 | `jobseeker/db.py` | SQLite schema and helpers. Each role is stored once, so it is scored and tailored only once |
@@ -105,9 +106,9 @@ When `EMAIL_ADDRESS` and `EMAIL_APP_PASSWORD` are set, each run also checks your
 
 - **Read-only:** the folder is opened read-only and messages are fetched with `BODY.PEEK`, so nothing is marked read, moved or deleted.
 - **What it reads:** the first scan covers the last 30 days; later scans start from the previous scan. Only emails from hiring platforms and job boards, or with a job-related subject, are opened.
-- **Sorting:** each email becomes Offer, Rejection, Interview, Assessment, Application received, Job alert or Recruiter outreach. Keyword rules always run. With OpenAI credit, the model also reads the email and adds the company, role, a summary, the next step and any deadline, newest first, up to 100 emails per scan. Job-board alerts and newsletters are recognised by sender and never sent to OpenAI.
+- **Sorting:** each email becomes Offer, Rejection, Interview, Assessment, Application received, Job alert or Recruiter outreach. Keyword rules always run. With OpenAI or Claude credit, the model also reads the email and adds the company, role, a summary, the next step and any deadline, newest first, up to 100 emails per scan. Job-board alerts and newsletters are recognised by sender and never sent to the AI model.
 - **Linking:** an email that names a stored role's company and title moves that role to `applied`, `assessment`, `interviewing`, `offer` or `rejected`.
-- **Privacy:** job emails are stored only in your local database. With OpenAI enabled, the text of those emails is sent to OpenAI to be summarised.
+- **Privacy:** job emails are stored only in your local database. With an AI model enabled, the text of those emails is sent to OpenAI or Anthropic to be summarised.
 
 For Gmail, turn on 2-Step Verification, create an app password at myaccount.google.com/apppasswords, and put it in `.env`. Your normal Google password won't work. Other providers work too: set `EMAIL_IMAP_HOST`, and `EMAIL_FOLDER` if the folder isn't `INBOX`.
 
@@ -139,8 +140,13 @@ Then fill in `.env`:
 | `OPENAI_API_KEY` | Resume analysis, fit scoring and tailoring |
 | `OPENAI_MODEL` | Model for resume analysis and tailoring, default `gpt-4o` |
 | `OPENAI_CHEAP_MODEL` | Lower-cost model for fit scoring, email sorting and company checks, default `gpt-4.1-mini` |
+| `ANTHROPIC_API_KEY` | Claude, from console.anthropic.com. A Claude.ai subscription doesn't include API credit |
+| `ANTHROPIC_MODEL`, `ANTHROPIC_CHEAP_MODEL` | Claude models, default `claude-opus-5-5` for analysis and tailoring and `claude-haiku-5-5` for the high-volume checks |
+| `LLM_PROVIDERS` | Order to try providers, default `openai,anthropic`. Put `anthropic` first to prefer Claude |
 | `APIFY_TOKEN` | LinkedIn, Naukri, Indeed and Foundit. Optional: without it, only career sites are searched |
 | `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD` | Optional inbox updates. `EMAIL_IMAP_HOST` defaults to `imap.gmail.com` |
+
+You need at least one of `OPENAI_API_KEY` and `ANTHROPIC_API_KEY`. With both, a call that fails on the first provider is retried on the second. A provider that reports no credit is skipped for the rest of the run, so running out of OpenAI credit moves everything to Claude, and the reverse.
 
 Put your resume in `data/resume/`. The newest file there is used, and changing it triggers a new resume analysis.
 
@@ -198,18 +204,18 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 | Resume analysis | Target roles, strengths and gaps. Upload a new resume here |
 | Settings | Cities, remote roles, years of experience, and the target company list |
 
-**Scheduled runs** turns the 9 am and 9 pm runs on or off; each run spends Apify credit, and OpenAI credit for scoring and tailoring. **Run now** runs a full search. **Check roles are open** rechecks every stored role.
+**Scheduled runs** turns the 9 am and 9 pm runs on or off; each run spends Apify credit, and OpenAI or Claude credit for scoring and tailoring. **Run now** runs a full search. **Check roles are open** rechecks every stored role.
 
 ### Customising
 
 - **Companies:** add or remove them in the dashboard's Settings tab. **Check company** confirms the name first, using in order:
   1. Job listings already in your database.
   2. Wikidata.
-  3. OpenAI, when the first two don't know the name, which is common for startups.
+  3. An AI model (OpenAI or Claude), when the first two don't know the name, which is common for startups.
 
   It shows what it found and the source, suggests the right name for misspellings such as "gogle", and tells you when the company is already in your list. You can still add a name it can't confirm, with **Add anyway**. A new company without a career-site feed is searched on LinkedIn and Naukri.
 - **Career-site feed:** add an entry to `FEEDS` in `jobseeker/config.py`. For a Workday site, set `tenant`, `dc` and `site` from its `myworkdayjobs.com` URL. For Greenhouse, set `board`.
-- **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (50 per run) and `max_tailored_per_run` (5 per run). These cap OpenAI and Apify spend.
+- **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (50 per run) and `max_tailored_per_run` (5 per run). These cap AI model and Apify spend.
 
 ## Output
 
@@ -229,6 +235,11 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
   - **Tailoring:** up to 5 High roles on `gpt-4o`, about $0.03 each.
   - **Skipped titles:** titles that past runs nearly always scored below 40 (SAP, Salesforce, testing, security, PhD or early-career, Android/iOS, silicon) are not scored at all.
   - **Retries:** roles that fail to score, for example when credits run out, are retried on the next run.
+- **Claude:** with the default models, about $0.40 per run:
+  - **Fit scoring:** on Claude Haiku 5.5 at low effort, about $0.001 per role ($0.10 / $0.50 per million input and output tokens).
+  - **Tailoring:** on Claude Opus 5.5 at medium effort, about $0.07 per resume ($4 / $20 per million tokens, including its thinking tokens).
+  - **Lower cost:** to make tailoring cheaper, set `ANTHROPIC_MODEL=claude-sonnet-5-5` ($2 / $10).
+  - **Refusals:** Opus requests use server-side refusal fallbacks, so a request the model declines is retried on another Claude model in the same call.
 - **Apify:** LinkedIn and Naukri cost about $0.22 per run, Indeed about $0.03, and Foundit up to $0.10 (it is billed per job and capped by `foundit_max_jobs`, default 40; set it to 0 to turn Foundit off). At two runs a day, that is more than Apify's $5 monthly free credit.
 - **Board data:** Indeed results give the searched city as the location, because Indeed returns coordinates without a city name. Foundit results include skills and experience but not the full job description, so their fit scores rest on less detail.
 

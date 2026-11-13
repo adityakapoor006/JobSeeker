@@ -384,6 +384,8 @@ def test_cheap_model_for_volume_calls(monkeypatch):
             return type("R", (), {"choices": [type("C", (), {"message": message})]})
 
     monkeypatch.setattr(llm, "OpenAI", Fake)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("LLM_PROVIDERS", "openai")
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_CHEAP_MODEL", raising=False)
     llm.complete_json("x", cheap=True)
@@ -409,3 +411,62 @@ def test_only_high_roles_tailored_automatically(monkeypatch):
     monkeypatch.setattr(pipeline, "tailor", lambda conn, row, resume: tailored.append(row["id"]))
     assert pipeline.tailor_pending(conn, "resume", 5) == (1, 0)
     assert tailored == ["h"]
+
+
+def test_claude_json_parsing():
+    from jobseeker.llm_claude import parse_json
+    assert parse_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert parse_json('Here it is: {"a": {"b": 2}} done') == {"a": {"b": 2}}
+
+
+def test_claude_request_shape(monkeypatch):
+    from jobseeker import llm_claude
+    calls = []
+
+    class Response:
+        stop_reason = "end_turn"
+        content = [type("T", (), {"type": "thinking"}), type("T", (), {"type": "text", "text": '{"ok": true}'})]
+
+    class Endpoint:
+        def __init__(self, beta):
+            self.beta = beta
+
+        def create(self, **kwargs):
+            calls.append((self.beta, kwargs))
+            return Response()
+
+    class Client:
+        def __init__(self, **_):
+            self.messages = Endpoint(False)
+            self.beta = type("B", (), {"messages": Endpoint(True)})()
+
+    monkeypatch.setattr(llm_claude.anthropic, "Anthropic", Client)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_CHEAP_MODEL", raising=False)
+    assert llm_claude.complete_json("x", cheap=True) == {"ok": True}
+    assert llm_claude.complete_json("x") == {"ok": True}
+    (cheap_beta, cheap), (main_beta, main) = calls
+    assert not cheap_beta and cheap["model"] == "claude-haiku-5-5" and cheap["output_config"] == {"effort": "low"}
+    assert main_beta and main["model"] == "claude-opus-5-5" and main["fallbacks"] == "default"
+    assert "temperature" not in cheap and "temperature" not in main
+
+
+def test_provider_fallback_and_out_of_credit(monkeypatch):
+    from jobseeker import llm
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.delenv("LLM_PROVIDERS", raising=False)
+    monkeypatch.setattr(llm, "_out_of_credit", set())
+    tried = []
+
+    def openai_fails(*_):
+        tried.append("openai")
+        raise RuntimeError("You have no credits remaining")
+
+    monkeypatch.setattr(llm, "_openai_json", openai_fails)
+    monkeypatch.setattr(llm.llm_claude, "complete_json", lambda prompt, cheap: tried.append("anthropic") or {"ok": 1})
+    assert llm.complete_json("x") == {"ok": 1}
+    assert llm.complete_json("x") == {"ok": 1}
+    assert tried == ["openai", "anthropic", "anthropic"]
+    monkeypatch.setenv("LLM_PROVIDERS", "anthropic")
+    assert llm.providers() == ["anthropic"]

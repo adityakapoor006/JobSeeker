@@ -45,7 +45,7 @@ if not env("APIFY_TOKEN"):
     top[0].info("Add APIFY_TOKEN to .env to include LinkedIn, Naukri, Indeed and Foundit.")
 scheduled = schedule.is_enabled()
 wanted = top[1].toggle("Scheduled runs (9 am, 9 pm)", scheduled,
-                       help="Each run spends Apify credit and, once scoring works, OpenAI credit.")
+                       help="Each run spends Apify credit and, OpenAI or Claude credit for scoring.")
 if wanted != scheduled:
     schedule.enable() if wanted else schedule.disable()
     st.rerun()
@@ -143,7 +143,7 @@ with tabs[4]:
             result = inbox.scan(conn, settings["companies"])
         st.success(f"{result['emails']} new job emails, {result['updated_roles']} roles updated")
         if result["llm_failed"]:
-            st.caption("OpenAI was unavailable, so emails were sorted by keyword rules only.")
+            st.caption("No AI model was available, so emails were sorted by keyword rules only.")
     show_all = st.checkbox("Include job alerts and recruiter outreach", False)
     with db.connect() as conn:
         mails = [dict(r) for r in conn.execute("SELECT * FROM emails ORDER BY received_at DESC")]

@@ -1,9 +1,16 @@
-"""OpenAI JSON calls for resume analysis, fit scoring and tailoring."""
+"""LLM JSON calls for resume analysis, fit scoring and tailoring, through OpenAI or Claude."""
 import json
+import re
 
 from openai import OpenAI
 
+from . import llm_claude
 from .config import env
+
+PROVIDER_KEYS = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+# A provider that reports no credit is skipped for the rest of the run instead of failing every call.
+OUT_OF_CREDIT = re.compile(r"quota|credit|billing", re.I)
+_out_of_credit: set[str] = set()
 
 TRUTH_RULES = """Rules you must never break:
 - Use only facts present in the RESUME. Never invent skills, employers, dates, metrics, titles or claims.
@@ -88,9 +95,36 @@ DESCRIPTION:
 """
 
 
+def providers() -> list[str]:
+    """Providers with a key, in LLM_PROVIDERS order (default: OpenAI first, then Claude)."""
+    order = [p.strip().lower() for p in (env("LLM_PROVIDERS") or "openai,anthropic").split(",")]
+    return [p for p in order if p in PROVIDER_KEYS and env(PROVIDER_KEYS[p])]
+
+
+def available() -> bool:
+    return bool(providers())
+
+
 def complete_json(prompt: str, temperature: float = 0.1, cheap: bool = False) -> dict:
-    """cheap=True uses the low-cost model, for high-volume checks: fit scoring, email and company names.
-    Resume analysis and tailoring keep the main model, because their output is what you send employers."""
+    """cheap=True uses each provider's low-cost model, for high-volume checks: fit scoring, email and
+    company names. Resume analysis and tailoring keep the main model, because their output is what
+    you send employers. When a provider fails, for example out of credit, the next one takes over."""
+    usable = [p for p in providers() if p not in _out_of_credit]
+    if not usable:
+        raise RuntimeError("No LLM provider with credit: add OPENAI_API_KEY or ANTHROPIC_API_KEY to .env")
+    for provider in usable:
+        try:
+            if provider == "anthropic":
+                return llm_claude.complete_json(prompt, cheap=cheap)
+            return _openai_json(prompt, temperature, cheap)
+        except Exception as exc:
+            if OUT_OF_CREDIT.search(str(exc)):
+                _out_of_credit.add(provider)
+            if provider == usable[-1]:
+                raise
+
+
+def _openai_json(prompt: str, temperature: float, cheap: bool) -> dict:
     client = OpenAI(api_key=env("OPENAI_API_KEY"))
     model = (env("OPENAI_CHEAP_MODEL") or "gpt-4.1-mini") if cheap else (env("OPENAI_MODEL") or "gpt-4o")
     response = client.chat.completions.create(

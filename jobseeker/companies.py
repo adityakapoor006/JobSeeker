@@ -1,14 +1,14 @@
 """Checks a company name before it joins the target list.
 
 Evidence comes from three places, strongest first: job listings already in the database,
-Wikidata, and finally OpenAI's view when neither knows the name (common for startups)."""
+Wikidata, and finally the AI model's view (OpenAI or Claude) when neither knows the name (common for startups)."""
 import difflib
 import re
 
 import httpx
 
 from . import llm
-from .config import FEEDS, env
+from .config import FEEDS
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 # Wikidata asks API clients to identify themselves.
@@ -95,17 +95,16 @@ def check(name: str, companies: list[str], known: dict[str, int]) -> dict:
             suggestions += wiki_suggestions
         except httpx.HTTPError as exc:
             notes.append(f"Wikidata could not be reached ({type(exc).__name__}).")
-    if not match and env("OPENAI_API_KEY"):
+    if not match and llm.available():
         try:
             answer = llm.complete_json(CHECK_PROMPT.format(name=name), cheap=True)
             if answer.get("is_company") and answer.get("official_name") and answer.get("confidence") != "low":
-                match = {"name": answer["official_name"], "source": "OpenAI",
+                match = {"name": answer["official_name"], "source": "AI model",
                          "evidence": answer.get("description", "") + " (the model's knowledge; not checked elsewhere)"}
             suggestions += [s for s in answer.get("did_you_mean") or [] if isinstance(s, str)]
         except Exception as exc:
-            reason = ("no credits left or too many requests" if type(exc).__name__ == "RateLimitError"
-                      else type(exc).__name__)
-            notes.append(f"OpenAI couldn't check this name ({reason}), so only job listings and Wikidata were used.")
+            reason = "no credit left" if llm.OUT_OF_CREDIT.search(str(exc)) else type(exc).__name__
+            notes.append(f"The AI check couldn't run ({reason}), so only job listings and Wikidata were used.")
     if match and already_listed(match["name"], companies):
         return {"status": "listed", "match": {"name": already_listed(match["name"], companies)},
                 "suggestions": [], "notes": notes}

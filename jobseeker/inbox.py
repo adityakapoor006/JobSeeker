@@ -19,7 +19,7 @@ FIRST_SCAN_DAYS = 30
 MAX_HEADERS = 2000
 FETCH_BATCH = 200
 BODY_LIMIT = 4000
-# The newest emails go to OpenAI first; older ones fall back to the keyword rules.
+# The newest emails go to the AI model first; older ones fall back to the keyword rules.
 MAX_LLM_EMAILS = 100
 
 # Hiring platforms and job boards; mail from these is always looked at.
@@ -34,7 +34,7 @@ JOB_SENDERS = (
 JOB_SUBJECT = re.compile(r"applica|applied|applying|interview|assessment|candida|recruit|hiring|position|"
                          r"\brole\b|opening|opportunit|career|\bjobs?\b|job offer|offer letter", re.I)
 
-# Automated alert and newsletter senders: always "Job alert", never sent to OpenAI.
+# Automated alert and newsletter senders: always "Job alert", never sent to the AI model.
 ALERT_SENDER = re.compile(r"alert|digest|newsletter|\.news$|marketing|promo", re.I)
 
 # Checked against the subject first, then the body; the first match wins.
@@ -166,7 +166,7 @@ def record(conn, messages: list[EmailMessage], companies: list[str], use_llm: bo
                 category = answer.get("category") if answer.get("category") in LLM_CATEGORIES else category
                 details.update({k: str(answer.get(k) or "") for k in details})
             except Exception:
-                # Rules alone for the rest of this scan, e.g. when OpenAI credits run out.
+                # Rules alone for the rest of this scan, e.g. when every provider is out of credit.
                 stats["llm_failed"] = True
         if category in (None, "Other"):
             continue
@@ -222,7 +222,7 @@ def scan(conn, companies: list[str]) -> dict:
     started = db.now()
     known = [r["company"] for r in conn.execute("SELECT DISTINCT company FROM jobs")]
     stats = record(conn, fetch_messages(since), list(dict.fromkeys(companies + known)),
-                   use_llm=bool(env("OPENAI_API_KEY")))
+                   use_llm=llm.available())
     conn.execute("INSERT INTO inbox_state (id, last_scan) VALUES (1, ?) "
                  "ON CONFLICT(id) DO UPDATE SET last_scan = excluded.last_scan", (started,))
     return stats
