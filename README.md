@@ -14,7 +14,7 @@ It runs on your own machine. Your resume, API keys, job database and reports sta
 | Open-role check | Confirms each role is still live. Closed roles are hidden; roles it can't confirm are marked "unconfirmed" |
 | Fit score | 0-100, computed from evidence in your resume, not a number the model picks |
 | Buckets | High 80-100, Medium 60-79, Stretch 40-59, below 40 counted only |
-| Tailoring | High and Medium roles get a tailored `.docx` resume. Stretch roles are tailored on request |
+| Tailoring | High roles get a tailored `.docx` resume automatically. Medium and Stretch roles are tailored on request |
 | Email updates | Optional. Reads your inbox for application replies, interview invites, assessments, offers and rejections, and updates the matching role's status |
 | Report | A Markdown report per run, plus a Streamlit dashboard |
 
@@ -137,7 +137,8 @@ Then fill in `.env`:
 | Variable | Needed for |
 |---|---|
 | `OPENAI_API_KEY` | Resume analysis, fit scoring and tailoring |
-| `OPENAI_MODEL` | Model name, default `gpt-4o` |
+| `OPENAI_MODEL` | Model for resume analysis and tailoring, default `gpt-4o` |
+| `OPENAI_CHEAP_MODEL` | Lower-cost model for fit scoring, email sorting and company checks, default `gpt-4.1-mini` |
 | `APIFY_TOKEN` | LinkedIn, Naukri, Indeed and Foundit. Optional: without it, only career sites are searched |
 | `EMAIL_ADDRESS`, `EMAIL_APP_PASSWORD` | Optional inbox updates. `EMAIL_IMAP_HOST` defaults to `imap.gmail.com` |
 
@@ -208,7 +209,7 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 
   It shows what it found and the source, suggests the right name for misspellings such as "gogle", and tells you when the company is already in your list. You can still add a name it can't confirm, with **Add anyway**. A new company without a career-site feed is searched on LinkedIn and Naukri.
 - **Career-site feed:** add an entry to `FEEDS` in `jobseeker/config.py`. For a Workday site, set `tenant`, `dc` and `site` from its `myworkdayjobs.com` URL. For Greenhouse, set `board`.
-- **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (150 per run) and `max_tailored_per_run` (15 per run). These cap OpenAI and Apify spend.
+- **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (50 per run) and `max_tailored_per_run` (5 per run). These cap OpenAI and Apify spend.
 
 ## Output
 
@@ -223,7 +224,11 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 
 ## Costs
 
-- **OpenAI:** scoring and tailoring use your OpenAI key. Roles that fail to score, for example when credits run out, are retried on the next run.
+- **OpenAI:** about $0.25 per run at these defaults:
+  - **Fit scoring:** up to 50 roles on `gpt-4.1-mini`, about $0.002 each, with descriptions cut to 4,000 characters.
+  - **Tailoring:** up to 5 High roles on `gpt-4o`, about $0.03 each.
+  - **Skipped titles:** titles that past runs nearly always scored below 40 (SAP, Salesforce, testing, security, PhD or early-career, Android/iOS, silicon) are not scored at all.
+  - **Retries:** roles that fail to score, for example when credits run out, are retried on the next run.
 - **Apify:** LinkedIn and Naukri cost about $0.22 per run, Indeed about $0.03, and Foundit up to $0.10 (it is billed per job and capped by `foundit_max_jobs`, default 40; set it to 0 to turn Foundit off). At two runs a day, that is more than Apify's $5 monthly free credit.
 - **Board data:** Indeed results give the searched city as the location, because Indeed returns coordinates without a city name. Foundit results include skills and experience but not the full job description, so their fit scores rest on less detail.
 

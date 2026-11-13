@@ -70,9 +70,9 @@ DEFAULT_SETTINGS = {
     "max_results_per_company": 60,
     # Foundit is billed per job (about $0.0025 each); 0 turns it off.
     "foundit_max_jobs": 40,
-    # Caps LLM spend per run; the best keyword matches are scored first.
-    "max_jobs_to_score": 150,
-    "max_tailored_per_run": 15,
+    # Caps OpenAI spend per run; target companies and the best keyword matches are scored first.
+    "max_jobs_to_score": 50,
+    "max_tailored_per_run": 5,
 }
 
 # Same city under its other names, used when matching a posting's location.

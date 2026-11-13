@@ -88,10 +88,13 @@ DESCRIPTION:
 """
 
 
-def complete_json(prompt: str, temperature: float = 0.1) -> dict:
+def complete_json(prompt: str, temperature: float = 0.1, cheap: bool = False) -> dict:
+    """cheap=True uses the low-cost model, for high-volume checks: fit scoring, email and company names.
+    Resume analysis and tailoring keep the main model, because their output is what you send employers."""
     client = OpenAI(api_key=env("OPENAI_API_KEY"))
+    model = (env("OPENAI_CHEAP_MODEL") or "gpt-4.1-mini") if cheap else (env("OPENAI_MODEL") or "gpt-4o")
     response = client.chat.completions.create(
-        model=env("OPENAI_MODEL") or "gpt-4o",
+        model=model,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=temperature,

@@ -367,3 +367,45 @@ def test_company_check_reads_wikidata_companies_only():
                                                     {"label": "Goldman Sachs", "description": "American investment bank"}])
     assert match is None and suggestions == ["Goldman Sachs"]
     assert wikidata_match("Python", [{"label": "Python package", "description": "software library"}]) == (None, [])
+
+
+def test_cheap_model_for_volume_calls(monkeypatch):
+    from jobseeker import llm
+    used = []
+
+    class Fake:
+        def __init__(self, **_):
+            self.chat = self
+            self.completions = self
+
+        def create(self, model, **_):
+            used.append(model)
+            message = type("M", (), {"content": "{}"})
+            return type("R", (), {"choices": [type("C", (), {"message": message})]})
+
+    monkeypatch.setattr(llm, "OpenAI", Fake)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_CHEAP_MODEL", raising=False)
+    llm.complete_json("x", cheap=True)
+    llm.complete_json("x")
+    assert used == ["gpt-4.1-mini", "gpt-4o"]
+
+
+def test_off_domain_titles_skip_scoring():
+    assert pipeline.SKIP_SCORING.search("SAP GenAI Engineer")
+    assert pipeline.SKIP_SCORING.search("Software Engineer, PhD, Early Career, 2026")
+    assert not pipeline.SKIP_SCORING.search("Senior Software Engineer - Backend")
+    assert not pipeline.SKIP_SCORING.search("Staff Engineer, Big Data Platform")
+
+
+def test_only_high_roles_tailored_automatically(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    for job_id, bucket in (("h", "High"), ("m", "Medium"), ("s", "Stretch")):
+        conn.execute("INSERT INTO jobs (id, company, title, url, source, first_seen, last_seen, bucket, fit_score)"
+                     " VALUES (?, 'Acme', 'Engineer', 'u', 'careers', 'x', 'x', ?, 70)", (job_id, bucket))
+    tailored = []
+    monkeypatch.setattr(pipeline, "tailor", lambda conn, row, resume: tailored.append(row["id"]))
+    assert pipeline.tailor_pending(conn, "resume", 5) == (1, 0)
+    assert tailored == ["h"]

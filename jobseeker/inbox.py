@@ -162,7 +162,7 @@ def record(conn, messages: list[EmailMessage], companies: list[str], use_llm: bo
         if message_id in llm_ids and not stats["llm_failed"]:
             try:
                 answer = llm.complete_json(EMAIL_PROMPT.format(
-                    categories=LLM_CATEGORIES, sender=sender, subject=subject, body=body))
+                    categories=LLM_CATEGORIES, sender=sender, subject=subject, body=body), cheap=True)
                 category = answer.get("category") if answer.get("category") in LLM_CATEGORIES else category
                 details.update({k: str(answer.get(k) or "") for k in details})
             except Exception:

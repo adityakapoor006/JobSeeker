@@ -16,7 +16,8 @@ from .sources import apify
 from .sources.base import Job, fits_experience, in_locations
 from .sources.direct import FETCHERS
 
-DESCRIPTION_LIMIT = 6000
+# The end of long descriptions is mostly benefits and legal text.
+DESCRIPTION_LIMIT = 4000
 SCORE_WORKERS = 6
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
 TERM = re.compile(r"\b[A-Z][A-Za-z0-9+#.-]{1,}\b")
@@ -27,6 +28,9 @@ OPEN_LABEL = {"active": "confirmed", "unverified": "unconfirmed"}
 INTERNAL_HEADING = "ADDITIONAL VERIFIED DETAIL"
 LOCK_PATH = DATA_DIR / "run.lock"
 BOARD_WORKERS = 4  # Apify's free plan runs at most 5 actor jobs at once
+# Titles that past runs almost always scored below 40; they are not sent for scoring.
+SKIP_SCORING = re.compile(r"\b(sap|salesforce|testing|test engineer|qa|quality assurance|security|phd|"
+                          r"early career|new grad|physical design|silicon|verification|android|ios)\b", re.I)
 
 
 class RunInProgress(RuntimeError):
@@ -168,7 +172,7 @@ def priority(job: dict, resume_words: set[str], target: set[str]) -> tuple:
 def score_new_jobs(conn, settings: dict, resume: str, resume_hash: str) -> tuple[int, int]:
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM jobs WHERE active_state != 'closed' AND (resume_hash IS NULL OR resume_hash != ?)",
-        (resume_hash,))]
+        (resume_hash,)) if not SKIP_SCORING.search(r["title"])]
     resume_words = set(re.findall(r"[a-z][a-z+#.]+", resume.lower()))
     target = {c.lower() for c in settings["companies"]}
     rows.sort(key=lambda r: priority(r, resume_words, target), reverse=True)
@@ -177,7 +181,8 @@ def score_new_jobs(conn, settings: dict, resume: str, resume_hash: str) -> tuple
     def score(row: dict):
         fit = llm.complete_json(llm.FIT_PROMPT.format(
             years=settings["years_experience"], resume=resume, title=row["title"], company=row["company"],
-            location=row["location"], description=(row["description"] or "(no description available)")[:DESCRIPTION_LIMIT]))
+            location=row["location"], description=(row["description"] or "(no description available)")[:DESCRIPTION_LIMIT]),
+            cheap=True)
         return row["id"], compute_fit(fit, resume)
 
     done = 0
@@ -282,9 +287,9 @@ def tailor(conn, row: dict, resume: str) -> str:
 
 
 def tailor_pending(conn, resume: str, limit: int) -> tuple[int, int]:
-    """Stretch roles are skipped here; they are tailored only on explicit request."""
+    """Only High roles are tailored automatically; Medium and Stretch are tailored on request."""
     rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM jobs WHERE bucket IN ('High', 'Medium') AND tailored_path IS NULL"
+        "SELECT * FROM jobs WHERE bucket = 'High' AND tailored_path IS NULL"
         " AND active_state != 'closed' ORDER BY fit_score DESC LIMIT ?", (limit,))]
     done = 0
     for row in rows:

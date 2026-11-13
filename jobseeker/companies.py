@@ -97,7 +97,7 @@ def check(name: str, companies: list[str], known: dict[str, int]) -> dict:
             notes.append(f"Wikidata could not be reached ({type(exc).__name__}).")
     if not match and env("OPENAI_API_KEY"):
         try:
-            answer = llm.complete_json(CHECK_PROMPT.format(name=name))
+            answer = llm.complete_json(CHECK_PROMPT.format(name=name), cheap=True)
             if answer.get("is_company") and answer.get("official_name") and answer.get("confidence") != "low":
                 match = {"name": answer["official_name"], "source": "OpenAI",
                          "evidence": answer.get("description", "") + " (the model's knowledge; not checked elsewhere)"}

@@ -89,7 +89,7 @@ def role_table(bucket: str) -> None:
         if notes.exists():
             with st.expander("Tailoring notes and flags"):
                 st.markdown(notes.read_text())
-    elif bucket == "Stretch" and buttons[0].button("Tailor this role", key=f"t_{job['id']}"):
+    elif bucket in ("Medium", "Stretch") and buttons[0].button("Tailor this role", key=f"t_{job['id']}"):
         with st.spinner("Tailoring"), db.connect() as conn:
             pipeline.tailor(conn, job, load_resume()[0])
         st.rerun()
