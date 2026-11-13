@@ -53,6 +53,7 @@ A run (`pipeline.run`) goes through these steps in order. A source that fails is
 | `jobseeker/sources/direct.py` | One fetcher per career-site platform |
 | `jobseeker/sources/apify.py` | LinkedIn, Naukri, Indeed and Foundit searches through Apify actors |
 | `jobseeker/liveness.py` | Checks whether each stored role is still open |
+| `jobseeker/companies.py` | Checks a company name is real before it joins the target list |
 | `jobseeker/inbox.py` | Reads job emails from your inbox, read-only, and links them to stored roles |
 | `jobseeker/llm.py` | OpenAI prompts for resume analysis, fit scoring and tailoring, with strict truth rules |
 | `jobseeker/resume.py` | Reads the newest resume (`.docx`, `.pdf`, `.txt` or `.md`) and hashes it |
@@ -200,7 +201,12 @@ This installs the twice-daily schedule on macOS. You can also turn it on or off 
 
 ### Customising
 
-- **Companies:** add or remove them in the dashboard's Settings tab. A new company without a feed is searched on LinkedIn and Naukri.
+- **Companies:** add or remove them in the dashboard's Settings tab. **Check company** confirms the name first, using in order:
+  1. Job listings already in your database.
+  2. Wikidata.
+  3. OpenAI, when the first two don't know the name, which is common for startups.
+
+  It shows what it found and the source, suggests the right name for misspellings such as "gogle", and tells you when the company is already in your list. You can still add a name it can't confirm, with **Add anyway**. A new company without a career-site feed is searched on LinkedIn and Naukri.
 - **Career-site feed:** add an entry to `FEEDS` in `jobseeker/config.py`. For a Workday site, set `tenant`, `dc` and `site` from its `myworkdayjobs.com` URL. For Greenhouse, set `board`.
 - **Limits:** `data/settings.json` controls `max_results_per_company`, `foundit_max_jobs`, `max_jobs_to_score` (150 per run) and `max_tailored_per_run` (15 per run). These cap OpenAI and Apify spend.
 

@@ -344,3 +344,26 @@ def test_board_listing_without_company_is_skipped():
              {"title": None}]
     jobs = _jobs(items, lambda item: indeed_item_to_job(item, "Pune"))
     assert [j.company for j in jobs] == ["Acme"]
+
+
+def test_company_check_uses_listings_and_spots_duplicates():
+    from jobseeker.companies import already_listed, from_listings
+    assert already_listed("goldman sachs", ["Goldman Sachs"]) == "Goldman Sachs"
+    assert already_listed("Standard Chartered India", ["Standard Chartered"]) == "Standard Chartered"
+    known = {"Walmart Global Tech India": 12, "PhonePe": 2}
+    match, _ = from_listings("Walmart Global Tech", known)
+    assert match["name"] == "Walmart Global Tech India" and "12 roles" in match["evidence"]
+    match, suggestions = from_listings("PhonePay", known)
+    assert match is None and suggestions == ["PhonePe"]
+
+
+def test_company_check_reads_wikidata_companies_only():
+    from jobseeker.companies import wikidata_match
+    results = [{"label": "Zepto", "description": "prefix denoting 10 to the -21st power"},
+               {"label": "Zepto", "description": "Indian Q-commerce company"}]
+    match, _ = wikidata_match("zepto", results)
+    assert match == {"name": "Zepto", "source": "Wikidata", "evidence": "Indian Q-commerce company"}
+    match, suggestions = wikidata_match("Goldman", [{"label": "Goldman", "description": "family name"},
+                                                    {"label": "Goldman Sachs", "description": "American investment bank"}])
+    assert match is None and suggestions == ["Goldman Sachs"]
+    assert wikidata_match("Python", [{"label": "Python package", "description": "software library"}]) == (None, [])

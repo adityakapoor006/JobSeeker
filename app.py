@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from jobseeker import db, inbox, liveness, pipeline, schedule
+from jobseeker import companies, db, inbox, liveness, pipeline, schedule
 from jobseeker.config import FEEDS, RESUME_DIR, SETTINGS_PATH, env, load_settings, save_settings
 from jobseeker.resume import latest_resume, load_resume
 
@@ -182,11 +182,38 @@ with tabs[6]:
         settings["years_experience"] = int(years)
         save_settings(settings)
     st.subheader("Target companies")
-    new_company = st.text_input("Add a company")
-    if st.button("Add") and new_company.strip():
-        settings["companies"].append(new_company.strip())
-        save_settings(settings)
-        st.rerun()
+    new_company = st.text_input("Add a company").strip()
+    if st.button("Check company") and new_company:
+        with st.spinner("Checking the company name"), db.connect() as conn:
+            known = {r[0]: r[1] for r in conn.execute("SELECT company, COUNT(*) FROM jobs GROUP BY company")}
+        st.session_state["company_check"] = {"query": new_company,
+                                             **companies.check(new_company, settings["companies"], known)}
+    check = st.session_state.get("company_check")
+    if check and check["query"] == new_company:
+        def add_company(name: str) -> None:
+            settings["companies"].append(name)
+            save_settings(settings)
+            del st.session_state["company_check"]
+            st.rerun()
+
+        match = check["match"]
+        if check["status"] == "listed":
+            st.info(f"{match['name']} is already in your list.")
+        elif check["status"] == "verified":
+            st.success(f"**{match['name']}**: {match['evidence']}. Source: {match['source']}.")
+            if st.button(f"Add {match['name']}", type="primary"):
+                add_company(match["name"])
+        else:
+            st.warning(f"Couldn't confirm that \"{new_company}\" is a company. Check the spelling.")
+        for note in check["notes"]:
+            st.caption(note)
+        if check["suggestions"]:
+            st.write("Did you mean:")
+            for column, suggestion in zip(st.columns(len(check["suggestions"])), check["suggestions"]):
+                if column.button(f"Add {suggestion}", key=f"suggest_{suggestion}"):
+                    add_company(suggestion)
+        if check["status"] == "unverified" and st.button(f"Add \"{new_company}\" anyway"):
+            add_company(new_company)
     kept = st.multiselect("Current list", settings["companies"], settings["companies"])
     if kept != settings["companies"]:
         settings["companies"] = kept
